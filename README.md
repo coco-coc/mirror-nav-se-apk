@@ -4,15 +4,22 @@
 
 ## 最新版本
 
-- 版本：`1.0.4`（`versionCode 4`）
-- 标签：[`v1.0.4`](https://github.com/xmz28/mirror-nav-se-apk/releases/tag/v1.0.4)
-- APK：[下载最新 Release APK](https://github.com/xmz28/mirror-nav-se-apk/releases/download/v1.0.4/tou-ping-nav-se-release-v1.0.4.apk)
+- 版本：`1.0.5`（`versionCode 5`）
+- 标签：[`v1.0.5`](https://github.com/xmz28/mirror-nav-se-apk/releases/tag/v1.0.5)
+- APK：[下载最新 Release APK](https://github.com/xmz28/mirror-nav-se-apk/releases/download/v1.0.5/tou-ping-nav-se-release-v1.0.5.apk)
 - 包名：`com.example.bleconnectse`
 
 ## 功能
 
 - **仪表投屏**：连接仪表 AP 或 P2P 后，支持相册媒体、摄像头和手机屏幕投屏。
 - **仪表壁纸**：选择手机中的图片并设置为仪表壁纸。
+
+## 仪表外观设置建议
+
+- **5 寸仪表（800×480）**：请使用皮肤功能，可选择“换小圈”“换背景”或“小圈+背景”。
+- **6 寸、7 寸仪表**：请使用“设置壁纸”功能，仪表端固件需分别达到 **1.28、1.94** 或以上。
+
+> 皮肤功能目前仅适配 800×480 仪表。
 
 ## 仪表端兼容性
 
