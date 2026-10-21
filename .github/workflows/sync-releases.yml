@@ -12,6 +12,31 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout this fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync tags exactly from upstream
+        run: |
+          git remote add upstream https://github.com/xmz28/mirror-nav-se-apk.git || git remote set-url upstream https://github.com/xmz28/mirror-nav-se-apk.git
+          git fetch upstream --tags --force
+          # 删除你这边多余、上游没有的 Tag，保证 Tag 集合一模一样
+          for t in $(git tag); do
+            if ! git ls-remote --tags upstream "refs/tags/$t" | grep -q "refs/tags/$t"; then
+              echo "删除多余 Tag: $t"
+              git tag -d "$t" || true
+              git push origin ":refs/tags/$t" || true
+            fi
+          done
+          # 把上游 Tag 原样强推到你这边：同名、同指向
+          # 注释 Tag（v1.0.0/v1.01/v1.02）连 Tag 对象和日期都原样保留，不会新建
+          git push origin --tags --force
+          echo "--- 上游 Tag ---"
+          git ls-remote --tags https://github.com/xmz28/mirror-nav-se-apk.git
+          echo "--- 你这边 Tag ---"
+          git ls-remote --tags origin
+
       - name: Mirror all releases from upstream
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -21,25 +46,64 @@ jobs:
           TARGET="${{ github.repository }}"
           echo "Target: $TARGET"
           echo "Upstream: $UPSTREAM"
-          for tag in $(gh api "repos/$UPSTREAM/releases?per_page=100" -q '.[].tag_name'); do
+          # Tag 已在上一步同步到位，下面建 Release 时只会沿用已有 Tag，不会新建错位 Tag
+          # 从旧到新建，保证页面顺序和上游一致：v1.0.0 -> ... -> v1.0.6
+          for tag in $(gh api "repos/$UPSTREAM/releases?per_page=100" -q '.[].tag_name' | tac); do
             echo "=== $tag ==="
-            if gh release view "$tag" -R "$TARGET" >/dev/null 2>&1; then
-              echo "已存在，跳过: $tag"
+            gh api "repos/$UPSTREAM/releases/tags/$tag" > /tmp/up.json
+            TITLE=$(jq -r '.name // .tag_name' /tmp/up.json)
+            jq -r '.body // ""' /tmp/up.json > /tmp/notes.md
+            IS_PRE=$(jq -r '.prerelease' /tmp/up.json)
+            if ! gh release view "$tag" -R "$TARGET" >/dev/null 2>&1; then
+              # 不存在：新版本，新建（沿用已同步好的 Tag）
+              echo "新版本，创建: $tag"
+              mkdir -p "/tmp/dl-$tag"
+              gh release download "$tag" -R "$UPSTREAM" -D "/tmp/dl-$tag" || true
+              ARGS=(--title "$TITLE" --notes-file /tmp/notes.md)
+              if [ "$IS_PRE" = "true" ]; then ARGS+=(--prerelease); fi
+              if [ -n "$(ls -A /tmp/dl-$tag 2>/dev/null)" ]; then
+                gh release create "$tag" -R "$TARGET" "${ARGS[@]}" /tmp/dl-$tag/*
+              else
+                gh release create "$tag" -R "$TARGET" "${ARGS[@]}"
+              fi
+              echo "完成: $tag"
+              sleep 3
               continue
             fi
-            mkdir -p "/tmp/$tag"
-            gh api "repos/$UPSTREAM/releases/tags/$tag" > "/tmp/$tag.json"
-            TITLE=$(jq -r '.name // .tag_name' "/tmp/$tag.json")
-            jq -r '.body // ""' "/tmp/$tag.json" > "/tmp/$tag.md"
-            IS_PRE=$(jq -r '.prerelease' "/tmp/$tag.json")
-            gh release download "$tag" -R "$UPSTREAM" -D "/tmp/$tag" || true
-            ARGS=(--title "$TITLE" --notes-file "/tmp/$tag.md")
-            if [ "$IS_PRE" = "true" ]; then ARGS+=(--prerelease); fi
-            if [ -n "$(ls -A /tmp/$tag 2>/dev/null)" ]; then
-              gh release create "$tag" -R "$TARGET" "${ARGS[@]}" /tmp/$tag/*
-            else
-              gh release create "$tag" -R "$TARGET" "${ARGS[@]}"
+            # 已存在：不整段跳过，先核对；一致才真跳过，有差异就地修（不删 Release，不影响顺序）
+            echo "已存在，核对中: $tag"
+            gh api "repos/$TARGET/releases/tags/$tag" > /tmp/tg.json
+            TG_TITLE=$(jq -r '.name // .tag_name' /tmp/tg.json)
+            jq -r '.body // ""' /tmp/tg.json > /tmp/tg-notes.md
+            if [ "$TITLE" != "$TG_TITLE" ] || ! cmp -s /tmp/notes.md /tmp/tg-notes.md; then
+              echo "标题/说明有差异，就地更新: $tag"
+              gh release edit "$tag" -R "$TARGET" --title "$TITLE" --notes-file /tmp/notes.md
             fi
-            echo "完成: $tag"
+            jq -r '.assets[] | "\(.name)|\(.size)|\(.digest // "")"' /tmp/up.json | sort > /tmp/up-assets.txt
+            jq -r '.assets[] | "\(.name)|\(.size)|\(.digest // "")"' /tmp/tg.json | sort > /tmp/tg-assets.txt
+            if cmp -s /tmp/up-assets.txt /tmp/tg-assets.txt; then
+              echo "附件一致，跳过: $tag"
+            else
+              echo "附件有差异，就地同步（不删 Release）: $tag"
+              mkdir -p "/tmp/fix-$tag"
+              gh release download "$tag" -R "$UPSTREAM" -D "/tmp/fix-$tag" || true
+              jq -r '.assets[].name' /tmp/up.json | sort > /tmp/up-names.txt
+              jq -r '.assets[].name' /tmp/tg.json | sort > /tmp/tg-names.txt
+              while IFS= read -r aname; do
+                if [ -n "$aname" ]; then
+                  echo "删除多余附件: $aname"
+                  gh release delete-asset "$tag" "$aname" -R "$TARGET" --yes || true
+                fi
+              done < <(comm -13 /tmp/up-names.txt /tmp/tg-names.txt)
+              if [ -n "$(ls -A /tmp/fix-$tag 2>/dev/null)" ]; then
+                gh release upload "$tag" -R "$TARGET" --clobber /tmp/fix-$tag/*
+              fi
+              echo "附件已对齐: $tag"
+            fi
           done
+          LATEST=$(gh api "repos/$UPSTREAM/releases?per_page=1" -q '.[0].tag_name')
+          echo "标记 Latest: $LATEST"
+          gh release edit "$LATEST" -R "$TARGET" --latest || true
+          echo "--- 你仓库现在的 Release 顺序（应与上游一致）---"
+          gh release list -R "$TARGET" --limit 100
           echo "全部同步完成"
