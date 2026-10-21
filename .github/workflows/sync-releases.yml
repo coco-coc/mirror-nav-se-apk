@@ -1,0 +1,45 @@
+name: Sync Releases
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 4 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror all releases from upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM: xmz28/mirror-nav-se-apk
+        run: |
+          set -e
+          TARGET="${{ github.repository }}"
+          echo "Target: $TARGET"
+          echo "Upstream: $UPSTREAM"
+          for tag in $(gh api "repos/$UPSTREAM/releases?per_page=100" -q '.[].tag_name'); do
+            echo "=== $tag ==="
+            if gh release view "$tag" -R "$TARGET" >/dev/null 2>&1; then
+              echo "已存在，跳过: $tag"
+              continue
+            fi
+            mkdir -p "/tmp/$tag"
+            gh api "repos/$UPSTREAM/releases/tags/$tag" > "/tmp/$tag.json"
+            TITLE=$(jq -r '.name // .tag_name' "/tmp/$tag.json")
+            jq -r '.body // ""' "/tmp/$tag.json" > "/tmp/$tag.md"
+            IS_PRE=$(jq -r '.prerelease' "/tmp/$tag.json")
+            gh release download "$tag" -R "$UPSTREAM" -D "/tmp/$tag" || true
+            ARGS=(--title "$TITLE" --notes-file "/tmp/$tag.md")
+            if [ "$IS_PRE" = "true" ]; then ARGS+=(--prerelease); fi
+            if [ -n "$(ls -A /tmp/$tag 2>/dev/null)" ]; then
+              gh release create "$tag" -R "$TARGET" "${ARGS[@]}" /tmp/$tag/*
+            else
+              gh release create "$tag" -R "$TARGET" "${ARGS[@]}"
+            fi
+            echo "完成: $tag"
+          done
+          echo "全部同步完成"
